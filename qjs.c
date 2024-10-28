@@ -330,6 +330,15 @@ int main(int argc, char **argv)
     }
 #endif
 
+	const char init_filename[] = "/zip/.init.mjs";
+	const int init_file = access( init_filename, F_OK ) == 0;
+    if ( init_file ) {
+        //fprintf(stderr, "/zip/.init.mjs FOUND\n");
+		//module = 1;
+		//interactive = 0;
+		load_std = 1;
+    }
+
     /* cannot use getopt because we want to pass the command line to
        the script */
     optind = 1;
@@ -507,12 +516,18 @@ int main(int argc, char **argv)
             if (eval_buf(ctx, expr, strlen(expr), "<cmdline>", 0))
                 goto fail;
         } else
-        if (optind >= argc) {
+        if (optind >= argc && !init_file) {
             /* interactive mode */
             interactive = 1;
         } else {
             const char *filename;
-            filename = argv[optind];
+            if ( !init_file ) { 
+            	filename = argv[optind];
+            }
+            else {
+            	filename = init_filename;
+            }
+
             if (eval_file(ctx, filename, module))
                 goto fail;
         }

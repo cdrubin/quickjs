@@ -37,7 +37,7 @@ endif
 # force 32 bit build for some utilities
 #CONFIG_M32=y
 # cosmopolitan build (see https://github.com/jart/cosmopolitan)
-#CONFIG_COSMO=y
+CONFIG_COSMO=y
 
 # installation directory
 PREFIX?=/usr/local

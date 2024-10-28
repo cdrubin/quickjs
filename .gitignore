@@ -22,3 +22,15 @@ unicode
 unicode_gen
 run_octane
 run_sunspider_like
+examples/hello.aarch64.elf
+examples/hello.com.dbg
+examples/hello_module.aarch64.elf
+examples/hello_module.com.dbg
+examples/test_fib.aarch64.elf
+examples/test_fib.com.dbg
+qjs.aarch64.elf
+qjs.com.dbg
+qjsc.aarch64.elf
+qjsc.com.dbg
+run-test262.aarch64.elf
+run-test262.com.dbg
