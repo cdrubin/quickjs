@@ -40,6 +40,68 @@
 #include <malloc_np.h>
 #endif
 
+
+// BEGIN: cdrubin
+// exec of files within zipos
+
+#define _COSMO_SOURCE
+
+#include <stdbool.h>
+#include "libc/dce.h"
+#include "libc/calls/calls.h"
+#include "libc/calls/pledge.h"
+#include "libc/calls/pledge.internal.h"
+#include "libc/calls/syscall-nt.internal.h"
+#include "libc/calls/syscall-sysv.internal.h"
+#include "libc/intrin/describeflags.h"
+#include "libc/intrin/likely.h"
+#include "libc/intrin/promises.h"
+#include "libc/intrin/strace.h"
+#include "libc/intrin/weaken.h"
+#include "libc/log/libfatal.internal.h"
+#include "libc/runtime/runtime.h"
+#include "libc/runtime/zipos.internal.h"
+#include "libc/sysv/consts/o.h"
+#include "libc/sysv/errfuns.h"
+
+
+
+int execz(const char *prog, char *const argv[], char *const envp[]) {
+  int rc;
+  struct ZiposUri uri;
+  if (!prog || !argv || !envp) {
+    rc = efault();
+  } else {
+    STRACE("execz(%#s, %s, %s)", prog, DescribeStringList(argv),
+           DescribeStringList(envp));
+    rc = 0;
+    if (IsLinux() && __execpromises && _weaken(sys_pledge_linux)) {
+      rc = _weaken(sys_pledge_linux)(__execpromises, __pledge_mode);
+    }
+    if (!rc) {
+      if (_weaken(__zipos_parseuri) &&
+          (_weaken(__zipos_parseuri)(prog, &uri) != -1)) {
+        rc = _weaken(__zipos_open)(&uri, O_RDONLY | O_CLOEXEC);
+        if (rc != -1) {
+          const int zipFD = rc;
+          strace_enabled(-1);
+          rc = fexecve(zipFD, argv, envp);
+          close(zipFD);
+          strace_enabled(+1);
+        }
+      } else if (!IsWindows()) {
+        rc = sys_execve(prog, argv, envp);
+      } else {
+        rc = sys_execve_nt(prog, argv, envp);
+      }
+    }
+  }
+  STRACE("execve(%#s) failed %d% m", prog, rc);
+  return rc;
+}
+// END: cdrubin
+
+
 #include "cutils.h"
 #include "quickjs-libc.h"
 
@@ -317,6 +379,27 @@ int main(int argc, char **argv)
     int load_jscalc;
 #endif
     size_t stack_size = 0;
+
+	// check value of first parameter
+	// if it matches the name of an executable at /zip/[executable]
+	// then run it passing all the rest of the parameters to it
+	// also think about how to handle if this file was executed 
+	// from a symlink with the name of that executable
+
+	int length = snprintf( NULL, 0, "/zip/%s", argv[1] );
+    char possible_executable_name[ length + 1 ];
+	snprintf( possible_executable_name, length + 1, "/zip/%s", argv[1] );
+
+    //fprintf(stderr, "%s\n", possible_executable_name);
+
+	if ( access( possible_executable_name, F_OK ) == 0 ) {
+    	//fprintf(stderr, "possible executable name found!\n");
+		int ret = execz( possible_executable_name, &argv[1], environ ); //(char *const[]){0} );
+		
+    	fprintf(stderr, "execz failure (returned: %d, errno: %d)?\n", ret, errno );
+	    exit( -10 );
+    }
+    //fprintf(stderr, "6\n");
 
 #ifdef CONFIG_BIGNUM
     /* load jscalc runtime if invoked as 'qjscalc' */
