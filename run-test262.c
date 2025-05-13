@@ -372,26 +372,39 @@ static void enumerate_tests(const char *path)
           namelist_cmp_indirect);
 }
 
+static void js_print_value_write(void *opaque, const char *buf, size_t len)
+{
+    FILE *fo = opaque;
+    fwrite(buf, 1, len, fo);
+}
+
 static JSValue js_print(JSContext *ctx, JSValueConst this_val,
                         int argc, JSValueConst *argv)
 {
     int i;
-    const char *str;
-
+    JSValueConst v;
+    
     if (outfile) {
         for (i = 0; i < argc; i++) {
             if (i != 0)
                 fputc(' ', outfile);
-            str = JS_ToCString(ctx, argv[i]);
-            if (!str)
-                return JS_EXCEPTION;
-            if (!strcmp(str, "Test262:AsyncTestComplete")) {
-                async_done++;
-            } else if (strstart(str, "Test262:AsyncTestFailure", NULL)) {
-                async_done = 2; /* force an error */
+            v = argv[i];
+            if (JS_IsString(v)) {
+                const char *str;
+                size_t len;
+                str = JS_ToCStringLen(ctx, &len, v);
+                if (!str)
+                    return JS_EXCEPTION;
+                if (!strcmp(str, "Test262:AsyncTestComplete")) {
+                    async_done++;
+                } else if (strstart(str, "Test262:AsyncTestFailure", NULL)) {
+                    async_done = 2; /* force an error */
+                }
+                fwrite(str, 1, len, outfile);
+                JS_FreeCString(ctx, str);
+            } else {
+                JS_PrintValue(ctx, js_print_value_write, outfile, v, NULL);
             }
-            fputs(str, outfile);
-            JS_FreeCString(ctx, str);
         }
         fputc('\n', outfile);
     }
@@ -757,6 +770,13 @@ static JSValue js_IsHTMLDDA(JSContext *ctx, JSValue this_val,
     return JS_NULL;
 }
 
+static JSValue js_gc(JSContext *ctx, JSValueConst this_val,
+                     int argc, JSValueConst *argv)
+{
+    JS_RunGC(JS_GetRuntime(ctx));
+    return JS_UNDEFINED;
+}
+
 static JSValue add_helpers1(JSContext *ctx)
 {
     JSValue global_obj;
@@ -790,6 +810,8 @@ static JSValue add_helpers1(JSContext *ctx)
     obj = JS_NewCFunction(ctx, js_IsHTMLDDA, "IsHTMLDDA", 0);
     JS_SetIsHTMLDDA(ctx, obj);
     JS_SetPropertyStr(ctx, obj262, "IsHTMLDDA", obj);
+    JS_SetPropertyStr(ctx, obj262, "gc",
+                      JS_NewCFunction(ctx, js_gc, "gc", 0));
 
     JS_SetPropertyStr(ctx, global_obj, "$262", JS_DupValue(ctx, obj262));
 
@@ -1571,7 +1593,7 @@ int run_test_buf(const char *filename, const char *harness, namelist_t *ip,
 
     for (i = 0; i < ip->count; i++) {
         if (eval_file(ctx, harness, ip->array[i],
-                      JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_STRIP)) {
+                      JS_EVAL_TYPE_GLOBAL)) {
             fatal(1, "error including %s for %s", ip->array[i], filename);
         }
     }
