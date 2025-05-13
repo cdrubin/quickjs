@@ -40,78 +40,11 @@
 #include <malloc_np.h>
 #endif
 
-
-// BEGIN: cdrubin
-// exec of files within zipos
-
-#define _COSMO_SOURCE
-
-#include <stdbool.h>
-#include "libc/dce.h"
-#include "libc/calls/calls.h"
-#include "libc/calls/pledge.h"
-#include "libc/calls/pledge.internal.h"
-#include "libc/calls/syscall-nt.internal.h"
-#include "libc/calls/syscall-sysv.internal.h"
-#include "libc/intrin/describeflags.h"
-#include "libc/intrin/likely.h"
-#include "libc/intrin/promises.h"
-#include "libc/intrin/strace.h"
-#include "libc/intrin/weaken.h"
-#include "libc/log/libfatal.internal.h"
-#include "libc/runtime/runtime.h"
-#include "libc/runtime/zipos.internal.h"
-#include "libc/sysv/consts/o.h"
-#include "libc/sysv/errfuns.h"
-
-
-
-int execz(const char *prog, char *const argv[], char *const envp[]) {
-  int rc;
-  struct ZiposUri uri;
-  if (!prog || !argv || !envp) {
-    rc = efault();
-  } else {
-    STRACE("execz(%#s, %s, %s)", prog, DescribeStringList(argv),
-           DescribeStringList(envp));
-    rc = 0;
-    if (IsLinux() && __execpromises && _weaken(sys_pledge_linux)) {
-      rc = _weaken(sys_pledge_linux)(__execpromises, __pledge_mode);
-    }
-    if (!rc) {
-      if (_weaken(__zipos_parseuri) &&
-          (_weaken(__zipos_parseuri)(prog, &uri) != -1)) {
-        rc = _weaken(__zipos_open)(&uri, O_RDONLY | O_CLOEXEC);
-        if (rc != -1) {
-          const int zipFD = rc;
-          strace_enabled(-1);
-          rc = fexecve(zipFD, argv, envp);
-          close(zipFD);
-          strace_enabled(+1);
-        }
-      } else if (!IsWindows()) {
-        rc = sys_execve(prog, argv, envp);
-      } else {
-        rc = sys_execve_nt(prog, argv, envp);
-      }
-    }
-  }
-  STRACE("execve(%#s) failed %d% m", prog, rc);
-  return rc;
-}
-// END: cdrubin
-
-
 #include "cutils.h"
 #include "quickjs-libc.h"
 
 extern const uint8_t qjsc_repl[];
 extern const uint32_t qjsc_repl_size;
-#ifdef CONFIG_BIGNUM
-extern const uint8_t qjsc_qjscalc[];
-extern const uint32_t qjsc_qjscalc_size;
-static int bignum_ext;
-#endif
 
 static int eval_buf(JSContext *ctx, const void *buf, int buf_len,
                     const char *filename, int eval_flags)
@@ -174,14 +107,6 @@ static JSContext *JS_NewCustomContext(JSRuntime *rt)
     ctx = JS_NewContext(rt);
     if (!ctx)
         return NULL;
-#ifdef CONFIG_BIGNUM
-    if (bignum_ext) {
-        JS_AddIntrinsicBigFloat(ctx);
-        JS_AddIntrinsicBigDecimal(ctx);
-        JS_AddIntrinsicOperators(ctx);
-        JS_EnableBignumExt(ctx, TRUE);
-    }
-#endif
     /* system modules */
     js_init_module_std(ctx, "std");
     js_init_module_os(ctx, "os");
@@ -332,6 +257,32 @@ static const JSMallocFunctions trace_mf = {
     js_trace_malloc_usable_size,
 };
 
+static size_t get_suffixed_size(const char *str)
+{
+    char *p;
+    size_t v;
+    v = (size_t)strtod(str, &p);
+    switch(*p) {
+    case 'G':
+        v <<= 30;
+        break;
+    case 'M':
+        v <<= 20;
+        break;
+    case 'k':
+    case 'K':
+        v <<= 10;
+        break;
+    default:
+        if (*p != '\0') {
+            fprintf(stderr, "qjs: invalid suffix: %s\n", p);
+            exit(1);
+        }
+        break;
+    }
+    return v;
+}
+
 #define PROG_NAME "qjs"
 
 void help(void)
@@ -345,15 +296,13 @@ void help(void)
            "    --script       load as ES6 script (default=autodetect)\n"
            "-I  --include file include an additional file\n"
            "    --std          make 'std' and 'os' available to the loaded script\n"
-#ifdef CONFIG_BIGNUM
-           "    --bignum       enable the bignum extensions (BigFloat, BigDecimal)\n"
-           "    --qjscalc      load the QJSCalc runtime (default if invoked as qjscalc)\n"
-#endif
            "-T  --trace        trace memory allocation\n"
            "-d  --dump         dump the memory usage stats\n"
-           "    --memory-limit n       limit the memory usage to 'n' bytes\n"
-           "    --stack-size n         limit the stack size to 'n' bytes\n"
-           "    --unhandled-rejection  dump unhandled promise rejections\n"
+           "    --memory-limit n  limit the memory usage to 'n' bytes (SI suffixes allowed)\n"
+           "    --stack-size n    limit the stack size to 'n' bytes (SI suffixes allowed)\n"
+           "    --no-unhandled-rejection  ignore unhandled promise rejections\n"
+           "-s                    strip all the debug info\n"
+           "    --strip-source    strip the source code\n"
            "-q  --quit         just instantiate the interpreter and quit\n");
     exit(1);
 }
@@ -371,56 +320,12 @@ int main(int argc, char **argv)
     int empty_run = 0;
     int module = -1;
     int load_std = 0;
-    int dump_unhandled_promise_rejection = 0;
+    int dump_unhandled_promise_rejection = 1;
     size_t memory_limit = 0;
     char *include_list[32];
     int i, include_count = 0;
-#ifdef CONFIG_BIGNUM
-    int load_jscalc;
-#endif
+    int strip_flags = 0;
     size_t stack_size = 0;
-
-	// check value of first parameter
-	// if it matches the name of an executable at /zip/[executable]
-	// then run it passing all the rest of the parameters to it
-	// also think about how to handle if this file was executed 
-	// from a symlink with the name of that executable
-
-	int length = snprintf( NULL, 0, "/zip/%s", argv[1] );
-    char possible_executable_name[ length + 1 ];
-	snprintf( possible_executable_name, length + 1, "/zip/%s", argv[1] );
-
-    //fprintf(stderr, "%s\n", possible_executable_name);
-
-	if ( access( possible_executable_name, F_OK ) == 0 ) {
-    	//fprintf(stderr, "possible executable name found!\n");
-		int ret = execz( possible_executable_name, &argv[1], environ ); //(char *const[]){0} );
-		
-    	fprintf(stderr, "execz failure (returned: %d, errno: %d)?\n", ret, errno );
-	    exit( -10 );
-    }
-    //fprintf(stderr, "6\n");
-
-#ifdef CONFIG_BIGNUM
-    /* load jscalc runtime if invoked as 'qjscalc' */
-    {
-        const char *p, *exename;
-        exename = argv[0];
-        p = strrchr(exename, '/');
-        if (p)
-            exename = p + 1;
-        load_jscalc = !strcmp(exename, "qjscalc");
-    }
-#endif
-
-	const char init_filename[] = "/zip/.init.mjs";
-	const int init_file = access( init_filename, F_OK ) == 0;
-    if ( init_file ) {
-        //fprintf(stderr, "/zip/.init.mjs FOUND\n");
-		//module = 1;
-		//interactive = 0;
-		load_std = 1;
-    }
 
     /* cannot use getopt because we want to pass the command line to
        the script */
@@ -495,20 +400,10 @@ int main(int argc, char **argv)
                 load_std = 1;
                 continue;
             }
-            if (!strcmp(longopt, "unhandled-rejection")) {
-                dump_unhandled_promise_rejection = 1;
+            if (!strcmp(longopt, "no-unhandled-rejection")) {
+                dump_unhandled_promise_rejection = 0;
                 continue;
             }
-#ifdef CONFIG_BIGNUM
-            if (!strcmp(longopt, "bignum")) {
-                bignum_ext = 1;
-                continue;
-            }
-            if (!strcmp(longopt, "qjscalc")) {
-                load_jscalc = 1;
-                continue;
-            }
-#endif
             if (opt == 'q' || !strcmp(longopt, "quit")) {
                 empty_run++;
                 continue;
@@ -518,7 +413,7 @@ int main(int argc, char **argv)
                     fprintf(stderr, "expecting memory limit");
                     exit(1);
                 }
-                memory_limit = (size_t)strtod(argv[optind++], NULL);
+                memory_limit = get_suffixed_size(argv[optind++]);
                 continue;
             }
             if (!strcmp(longopt, "stack-size")) {
@@ -526,7 +421,15 @@ int main(int argc, char **argv)
                     fprintf(stderr, "expecting stack size");
                     exit(1);
                 }
-                stack_size = (size_t)strtod(argv[optind++], NULL);
+                stack_size = get_suffixed_size(argv[optind++]);
+                continue;
+            }
+            if (opt == 's') {
+                strip_flags = JS_STRIP_DEBUG;
+                continue;
+            }
+            if (!strcmp(longopt, "strip-source")) {
+                strip_flags = JS_STRIP_SOURCE;
                 continue;
             }
             if (opt) {
@@ -537,11 +440,6 @@ int main(int argc, char **argv)
             help();
         }
     }
-
-#ifdef CONFIG_BIGNUM
-    if (load_jscalc)
-        bignum_ext = 1;
-#endif
 
     if (trace_memory) {
         js_trace_malloc_init(&trace_data);
@@ -557,6 +455,7 @@ int main(int argc, char **argv)
         JS_SetMemoryLimit(rt, memory_limit);
     if (stack_size != 0)
         JS_SetMaxStackSize(rt, stack_size);
+    JS_SetStripInfo(rt, strip_flags);
     js_std_set_worker_new_context_func(JS_NewCustomContext);
     js_std_init_handlers(rt);
     ctx = JS_NewCustomContext(rt);
@@ -574,11 +473,6 @@ int main(int argc, char **argv)
     }
 
     if (!empty_run) {
-#ifdef CONFIG_BIGNUM
-        if (load_jscalc) {
-            js_std_eval_binary(ctx, qjsc_qjscalc, qjsc_qjscalc_size, 0);
-        }
-#endif
         js_std_add_helpers(ctx, argc - optind, argv + optind);
 
         /* make 'std' and 'os' visible to non module code */
@@ -599,22 +493,17 @@ int main(int argc, char **argv)
             if (eval_buf(ctx, expr, strlen(expr), "<cmdline>", 0))
                 goto fail;
         } else
-        if (optind >= argc && !init_file) {
+        if (optind >= argc) {
             /* interactive mode */
             interactive = 1;
         } else {
             const char *filename;
-            if ( !init_file ) { 
-            	filename = argv[optind];
-            }
-            else {
-            	filename = init_filename;
-            }
-
+            filename = argv[optind];
             if (eval_file(ctx, filename, module))
                 goto fail;
         }
         if (interactive) {
+            JS_SetHostPromiseRejectionTracker(rt, NULL, NULL);
             js_std_eval_binary(ctx, qjsc_repl, qjsc_repl_size, 0);
         }
         js_std_loop(ctx);
