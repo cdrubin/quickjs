@@ -78,6 +78,8 @@ DEF(await, "await")
 /* empty string */
 DEF(empty_string, "")
 /* identifiers */
+DEF(keys, "keys")
+DEF(size, "size")
 DEF(length, "length")
 DEF(fileName, "fileName")
 DEF(lineNumber, "lineNumber")
@@ -177,12 +179,19 @@ DEF(minus_zero, "-0")
 DEF(Infinity, "Infinity")
 DEF(minus_Infinity, "-Infinity")
 DEF(NaN, "NaN")
+DEF(hasIndices, "hasIndices")
+DEF(ignoreCase, "ignoreCase")
+DEF(multiline, "multiline")
+DEF(dotAll, "dotAll")
+DEF(sticky, "sticky")
+DEF(unicodeSets, "unicodeSets")
 /* the following 3 atoms are only used with CONFIG_ATOMICS */
 DEF(not_equal, "not-equal")
 DEF(timed_out, "timed-out")
 DEF(ok, "ok")
 /* */
 DEF(toJSON, "toJSON")
+DEF(maxByteLength, "maxByteLength")
 /* class names */
 DEF(Object, "Object")
 DEF(Array, "Array")
@@ -222,6 +231,10 @@ DEF(Map, "Map")
 DEF(Set, "Set") /* Map + 1 */
 DEF(WeakMap, "WeakMap") /* Map + 2 */
 DEF(WeakSet, "WeakSet") /* Map + 3 */
+DEF(Iterator, "Iterator")
+DEF(IteratorHelper, "Iterator Helper")
+DEF(IteratorConcat, "Iterator Concat")
+DEF(IteratorWrap, "Iterator Wrap")
 DEF(Map_Iterator, "Map Iterator")
 DEF(Set_Iterator, "Set Iterator")
 DEF(Array_Iterator, "Array Iterator")
@@ -244,6 +257,7 @@ DEF(SyntaxError, "SyntaxError")
 DEF(TypeError, "TypeError")
 DEF(URIError, "URIError")
 DEF(InternalError, "InternalError")
+DEF(AggregateError, "AggregateError")
 /* private symbols */
 DEF(Private_brand, "<brand>")
 /* symbols */
